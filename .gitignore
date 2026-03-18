@@ -1,0 +1,8 @@
+# Giữ các file code chính và file build.bat
+__pycache__/
+rclone_env/
+build/
+*.spec
+conda_error.txt
+# Cho phép đẩy file .exe trong mục dist/ lên để có sẵn bản Build
+!dist/

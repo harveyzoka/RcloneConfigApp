@@ -1,0 +1,371 @@
+import sys
+import os
+import json
+import subprocess
+import psutil
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, 
+    QCheckBox, QMessageBox, QInputDialog, QDialog, QLabel, QLineEdit, QComboBox
+)
+from PyQt5.QtCore import Qt, QTimer
+from reference_dialog import ReferenceDialog
+
+RCLONE_EXE = "C:\\rclone\\rclone.exe"
+SETTINGS_FILE = "settings.json"
+
+# Process Creation Flags for Windows
+CREATE_NO_WINDOW = 0x08000000
+DETACHED_PROCESS = 0x00000008
+
+class ConfigManager:
+    @staticmethod
+    def load():
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except:
+                pass
+        return {"mounts": []}
+
+    @staticmethod
+    def save(data):
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+class StartupManager:
+    @staticmethod
+    def get_startup_vbs_path():
+        startup_dir = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+        return os.path.join(startup_dir, "RcloneAutoMount.vbs")
+
+    @staticmethod
+    def update_startup_script(mounts):
+        # We only create the startup script if there are auto_start mounts.
+        # Instead of launching the python script (which might require conda), 
+        # we generate a VBScript that directly runs the compiled exe with --startup flag.
+        app_path = os.path.abspath(sys.argv[0])
+        # If running from python source, app_path is main.py. We need to handle when packaged as exe.
+        is_exe = app_path.endswith('.exe')
+        
+        has_auto = any(m.get("auto_start", False) for m in mounts)
+        vbs_path = StartupManager.get_startup_vbs_path()
+        
+        if has_auto:
+            vbs_content = 'Set WshShell = CreateObject("WScript.Shell")\n'
+            if is_exe:
+                vbs_content += f'WshShell.Run """{app_path}"" --startup", 0, False\n'
+            else:
+                # Fallback for dev environment (assuming miniconda is in path or we just run python directly)
+                # In production, this won't be hit because it's packaged as exe.
+                python_exe = sys.executable
+                vbs_content += f'WshShell.Run """{python_exe}"" ""{app_path}"" --startup", 0, False\n'
+                
+            with open(vbs_path, "w", encoding="utf-8") as f:
+                f.write(vbs_content)
+        else:
+            if os.path.exists(vbs_path):
+                os.remove(vbs_path)
+
+
+class MountManager:
+    @staticmethod
+    def get_rclone_remotes():
+        if not os.path.exists(RCLONE_EXE):
+            return []
+        try:
+            # Hide console for this command too
+            result = subprocess.run([RCLONE_EXE, "config", "dump"], capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            data = json.loads(result.stdout)
+            return list(data.keys())
+        except Exception as e:
+            print("Error parsing rclone config", e)
+            return []
+
+    @staticmethod
+    def get_active_mounts():
+        active = {}
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                name = proc.info.get('name', '')
+                if name and name.lower() == 'rclone.exe':
+                    cmdline = proc.info.get('cmdline', [])
+                    if len(cmdline) >= 4 and cmdline[1] == 'mount':
+                        remote = cmdline[2]
+                        mountpoint = cmdline[3]
+                        active[f"{remote}_{mountpoint}"] = proc.info['pid']
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return active
+
+    @staticmethod
+    def start_mount(mount_cfg):
+        remote = mount_cfg["remote"]
+        mountpoint = mount_cfg["mountpoint"]
+        flags = mount_cfg.get("flags", "")
+        
+        cmd = [RCLONE_EXE, "mount", remote, mountpoint]
+        if flags:
+            # simple split, might not handle quotes perfectly but usually enough for standard rclone flags
+            cmd.extend(flags.split())
+            
+        subprocess.Popen(cmd, creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS)
+
+    @staticmethod
+    def stop_mount(pid):
+        try:
+            p = psutil.Process(pid)
+            p.kill()
+        except:
+            pass
+
+
+class AddMountDialog(QDialog):
+    def __init__(self, remotes, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Thêm cấu hình Mount")
+        self.resize(400, 200)
+        self.remotes = remotes
+        self.config = None
+        
+        layout = QVBoxLayout(self)
+        
+        layout.addWidget(QLabel("Chọn tài khoản Rclone (Remote):"))
+        self.combo_remote = QComboBox()
+        self.combo_remote.addItems(remotes)
+        layout.addWidget(self.combo_remote)
+        
+        layout.addWidget(QLabel("Ô đĩa hoặc thư mục (VD: X: hoặc C:\\mnt):"))
+        self.edit_mountpoint = QLineEdit()
+        self.edit_mountpoint.setText("X:")
+        layout.addWidget(self.edit_mountpoint)
+        
+        layout.addWidget(QLabel("Cờ mở rộng (VD: --vfs-cache-mode full):"))
+        self.edit_flags = QLineEdit()
+        self.edit_flags.setText("--vfs-cache-mode full")
+        layout.addWidget(self.edit_flags)
+        
+        btn_layout = QHBoxLayout()
+        btn_save = QPushButton("Lưu")
+        btn_save.clicked.connect(self.save_and_close)
+        btn_cancel = QPushButton("Hủy")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_save)
+        btn_layout.addWidget(btn_cancel)
+        
+        layout.addLayout(btn_layout)
+        
+    def save_and_close(self):
+        remote = self.combo_remote.currentText()
+        if not remote.endswith(":"):
+            remote += ":"
+        
+        mountpoint = self.edit_mountpoint.text().strip()
+        flags = self.edit_flags.text().strip()
+        
+        if not mountpoint:
+            QMessageBox.warning(self, "Lỗi", "Vui lòng nhập ổ đĩa/thư mục.")
+            return
+            
+        self.config = {
+            "remote": remote,
+            "mountpoint": mountpoint,
+            "flags": flags,
+            "auto_start": False
+        }
+        self.accept()
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Rclone Auto-Mount Manager")
+        self.resize(800, 500)
+        
+        self.config_data = ConfigManager.load()
+        self.active_mounts = {}
+        
+        self.init_ui()
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self.refresh_active_status)
+        self.refresh_timer.start(2000) # Check status every 2 seconds
+        
+        self.refresh_active_status()
+
+    def init_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+        
+        # Tools layout
+        tools_layout = QHBoxLayout()
+        btn_rclone_cfg = QPushButton("🔧 Mở cmd cấu hình Rclone gốc")
+        btn_rclone_cfg.clicked.connect(self.open_rclone_config)
+        tools_layout.addWidget(btn_rclone_cfg)
+        
+        btn_reference = QPushButton("📖 Bảng tra cứu các thông số")
+        btn_reference.clicked.connect(self.open_reference)
+        tools_layout.addWidget(btn_reference)
+        
+        tools_layout.addStretch()
+        layout.addLayout(tools_layout)
+        
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Remote", "Ổ đĩa / Điểm Mount", "Tự chạy (Auto)", "Trạng thái", "Hành động"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        layout.addWidget(self.table)
+        
+        # Bottom Layout
+        btn_layout = QHBoxLayout()
+        btn_add = QPushButton("➕ Thêm cấu hình Mount")
+        btn_add.clicked.connect(self.add_mount_config)
+        btn_layout.addWidget(btn_add)
+        btn_layout.addStretch()
+        
+        btn_del = QPushButton("❌ Xóa cấu hình đang chọn")
+        btn_del.clicked.connect(self.delete_mount_config)
+        btn_layout.addWidget(btn_del)
+        
+        layout.addLayout(btn_layout)
+        
+        self.populate_table()
+
+    def populate_table(self):
+        self.table.setRowCount(0)
+        mounts = self.config_data.get("mounts", [])
+        
+        for idx, m in enumerate(mounts):
+            self.table.insertRow(idx)
+            self.table.setItem(idx, 0, QTableWidgetItem(m["remote"]))
+            self.table.setItem(idx, 1, QTableWidgetItem(m["mountpoint"]))
+            
+            # Checkbox Auto Start
+            chk_auto = QCheckBox()
+            chk_auto.setChecked(m.get("auto_start", False))
+            # Lambda trick to capture idx correctly
+            chk_auto.stateChanged.connect(lambda state, i=idx: self.toggle_auto_start(i, state))
+            
+            chk_widget = QWidget()
+            chk_layout = QHBoxLayout(chk_widget)
+            chk_layout.addWidget(chk_auto)
+            chk_layout.setAlignment(Qt.AlignCenter)
+            chk_layout.setContentsMargins(0, 0, 0, 0)
+            self.table.setCellWidget(idx, 2, chk_widget)
+            
+            # Status Label
+            lbl_status = QLabel("Kiểm tra...")
+            lbl_status.setAlignment(Qt.AlignCenter)
+            self.table.setCellWidget(idx, 3, lbl_status)
+            
+            # Action Button
+            btn_action = QPushButton("Mount")
+            btn_action.clicked.connect(lambda checked, i=idx: self.toggle_mount(i))
+            self.table.setCellWidget(idx, 4, btn_action)
+
+    def refresh_active_status(self):
+        self.active_mounts = MountManager.get_active_mounts()
+        mounts = self.config_data.get("mounts", [])
+        
+        for idx, m in enumerate(mounts):
+            key = f"{m['remote']}_{m['mountpoint']}"
+            is_running = key in self.active_mounts
+            
+            lbl_status = self.table.cellWidget(idx, 3)
+            btn_action = self.table.cellWidget(idx, 4)
+            
+            if lbl_status and btn_action:
+                if is_running:
+                    lbl_status.setText("🟢 Đang chạy")
+                    btn_action.setText("Dừng (Stop)")
+                else:
+                    lbl_status.setText("⚪ Tắt")
+                    btn_action.setText("Khởi động (Mount)")
+
+    def toggle_auto_start(self, idx, state):
+        self.config_data["mounts"][idx]["auto_start"] = (state == Qt.Checked)
+        ConfigManager.save(self.config_data)
+        StartupManager.update_startup_script(self.config_data["mounts"])
+
+    def toggle_mount(self, idx):
+        m = self.config_data["mounts"][idx]
+        key = f"{m['remote']}_{m['mountpoint']}"
+        self.active_mounts = MountManager.get_active_mounts()
+        
+        if key in self.active_mounts:
+            # Stop it
+            pid = self.active_mounts[key]
+            MountManager.stop_mount(pid)
+        else:
+            # Start it
+            if not os.path.exists(RCLONE_EXE):
+                QMessageBox.critical(self, "Lỗi", f"Không tìm thấy rclone tại: {RCLONE_EXE}")
+                return
+            MountManager.start_mount(m)
+            
+        self.refresh_active_status()
+
+    def add_mount_config(self):
+        remotes = MountManager.get_rclone_remotes()
+        # Clean remote names
+        remotes = [r.replace(":", "") for r in remotes]
+        
+        dlg = AddMountDialog(remotes, self)
+        if dlg.exec_() == QDialog.Accepted and dlg.config:
+            self.config_data["mounts"].append(dlg.config)
+            ConfigManager.save(self.config_data)
+            self.populate_table()
+
+    def delete_mount_config(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            reply = QMessageBox.question(self, "Xóa", "Bạn có chắc muốn xóa cấu hình này?", QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                del self.config_data["mounts"][row]
+                ConfigManager.save(self.config_data)
+                StartupManager.update_startup_script(self.config_data["mounts"])
+                self.populate_table()
+
+    def open_rclone_config(self):
+        if not os.path.exists(RCLONE_EXE):
+            QMessageBox.critical(self, "Lỗi", f"Không tìm thấy rclone tại: {RCLONE_EXE}")
+            return
+        # Open in a new cmd window so user can interact
+        os.system(f'start cmd /c "{RCLONE_EXE} config"')
+        
+    def open_reference(self):
+        dlg = ReferenceDialog(self)
+        dlg.exec_()
+
+
+def run_startup_mode():
+    config = ConfigManager.load()
+    mounts = config.get("mounts", [])
+    active_mounts = MountManager.get_active_mounts()
+    
+    for m in mounts:
+        if m.get("auto_start", False):
+            key = f"{m['remote']}_{m['mountpoint']}"
+            if key not in active_mounts:
+                MountManager.start_mount(m)
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--startup":
+        run_startup_mode()
+        sys.exit(0)
+    else:
+        app = QApplication(sys.argv)
+        
+        # Apply a clean, slight modern style
+        app.setStyle("Fusion")
+        
+        window = MainWindow()
+        window.show()
+        sys.exit(app.exec_())
