@@ -3,8 +3,8 @@ echo =======================================================
 echo Cai dat moi truong Conda: rclone_gui_env
 echo =======================================================
 
-:: Create conda environment (Python 3.10)
-call conda create -n rclone_gui_env python=3.10 -y
+:: Create conda environment (Python 3.13.12)
+call conda create -n rclone_gui_env python=3.13.12 -y
 
 :: Install requirements inside conda env
 call conda run -n rclone_gui_env pip install -r requirements.txt

@@ -144,7 +144,7 @@ class AddMountDialog(QDialog):
         
         layout.addWidget(QLabel("Cờ mở rộng (Gợi ý Cân Bằng có sẵn):"))
         self.edit_flags = QLineEdit()
-        self.edit_flags.setText("--vfs-cache-mode full --vfs-cache-max-size 20G --vfs-cache-max-age 48h --buffer-size 64M --allow-other")
+        self.edit_flags.setText("--vfs-cache-mode full --vfs-cache-max-size 20G --vfs-cache-max-age 48h --buffer-size 128M --network-mode")
         layout.addWidget(self.edit_flags)
         
         btn_layout = QHBoxLayout()
