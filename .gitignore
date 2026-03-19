@@ -5,4 +5,4 @@ build/
 *.spec
 conda_error.txt
 # Cho phép đẩy file .exe trong mục dist/ lên để có sẵn bản Build
-!dist/
+dist/
