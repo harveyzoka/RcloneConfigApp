@@ -12,7 +12,14 @@ from PyQt5.QtCore import Qt, QTimer
 from reference_dialog import ReferenceDialog
 
 RCLONE_EXE = "C:\\rclone\\rclone.exe"
-SETTINGS_FILE = "settings.json"
+
+def get_base_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    else:
+        return os.path.dirname(os.path.abspath(__file__))
+
+SETTINGS_FILE = os.path.join(get_base_dir(), "settings.json")
 
 # Process Creation Flags for Windows
 CREATE_NO_WINDOW = 0x08000000
