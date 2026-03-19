@@ -1,11 +1,21 @@
 # reference_dialog.py
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QLabel, QHeaderView
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon
+import sys, os
+
+def get_resource_path(relative_path):
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
 
 class ReferenceDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Bảng tham số dòng lệnh rclone gợi ý")
+        self.setWindowIcon(QIcon(get_resource_path('app_icon.ico')))
         self.resize(700, 400)
         
         layout = QVBoxLayout(self)

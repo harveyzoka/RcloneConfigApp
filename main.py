@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, 
     QCheckBox, QMessageBox, QInputDialog, QDialog, QLabel, QLineEdit, QComboBox
 )
+from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QTimer
 from reference_dialog import ReferenceDialog
 
@@ -18,6 +19,13 @@ def get_base_dir():
         return os.path.dirname(sys.executable)
     else:
         return os.path.dirname(os.path.abspath(__file__))
+
+def get_resource_path(relative_path):
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
 
 SETTINGS_FILE = os.path.join(get_base_dir(), "settings.json")
 
@@ -133,6 +141,7 @@ class AddMountDialog(QDialog):
     def __init__(self, remotes, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Thêm cấu hình Mount")
+        self.setWindowIcon(QIcon(get_resource_path('app_icon.ico')))
         self.resize(400, 200)
         self.remotes = remotes
         self.config = None
@@ -189,6 +198,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Rclone Auto-Mount Manager")
+        self.setWindowIcon(QIcon(get_resource_path('app_icon.ico')))
         self.resize(800, 500)
         
         self.config_data = ConfigManager.load()
